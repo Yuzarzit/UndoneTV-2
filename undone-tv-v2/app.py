@@ -8,6 +8,7 @@ import urllib.parse
 from flask import Flask, render_template_string, jsonify, request
 
 app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 86400  # 1 dia de cache para /static (iconos, manifest, sw.js)
 
 CARPETA_CONTENIDO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contenido")
 
@@ -115,6 +116,7 @@ BLOQUE_B           = cargar_categoria("bloque_b.csv")
 BLOQUE_C           = cargar_categoria("bloque_c.csv")
 BLOQUE_E           = cargar_categoria("bloque_e.csv")
 CORTOS             = cargar_categoria("cortos.csv")
+PILOTOS            = cargar_categoria("pilotos.csv")
 def cargar_series():
     # Busca automaticamente CUALQUIER archivo que empiece con "series_"
     # dentro de contenido/ y lo suma como una serie mas a la rotacion.
@@ -176,6 +178,8 @@ def generar_parrilla_semanal(inicio_semana_utc):
     bloque_d = list(ROCK_CLASICO_PRE89); rng.shuffle(bloque_d); idx_d_manana = 0
     bloque_d_noche = list(ROCK_CLASICO_PRE89); rng.shuffle(bloque_d_noche); idx_d_noche = 0
     bloque_viernes_noche = list(BLOQUE_A + BLOQUE_C); rng.shuffle(bloque_viernes_noche); idx_viernes = 0
+    bloque_e = list(BLOQUE_E); rng.shuffle(bloque_e); idx_e = 0
+    pilotos = list(PILOTOS); rng.shuffle(pilotos); idx_piloto = 0
 
     series = SERIES
     idx_serie = 0
@@ -222,6 +226,49 @@ def generar_parrilla_semanal(inicio_semana_utc):
             parrilla.append(serie)
             t += serie["duracion"]
             hora = hora_vet(t)
+
+        # ------------------------------------------------------------
+        # LUNES 9 PM a 1 AM: Lunes Oscuro (solo musica oscura)
+        # ------------------------------------------------------------
+        if (dia == 0 and hora >= 21) or (dia == 1 and hora < 1):
+            add_blips()
+            tema = mus_oscuros[idx_mus_o % len(mus_oscuros)]
+            idx_mus_o += 1
+            parrilla.append(tema)
+            t += tema["duracion"]
+            continue
+
+        # ------------------------------------------------------------
+        # MARTES 9 PM a 1 AM: Maraton de Series
+        # ------------------------------------------------------------
+        if (dia == 1 and hora >= 21) or (dia == 2 and hora < 1):
+            add_blips()
+            tema = obtener_serie()
+            parrilla.append(tema)
+            t += tema["duracion"]
+            continue
+
+        # ------------------------------------------------------------
+        # MIERCOLES 9 PM a 1 AM: Noche de Pilotos
+        # ------------------------------------------------------------
+        if (dia == 2 and hora >= 21) or (dia == 3 and hora < 1):
+            add_blips()
+            tema = pilotos[idx_piloto % len(pilotos)]
+            idx_piloto += 1
+            parrilla.append(tema)
+            t += tema["duracion"]
+            continue
+
+        # ------------------------------------------------------------
+        # JUEVES 9 PM a 1 AM: Bloque E
+        # ------------------------------------------------------------
+        if (dia == 3 and hora >= 21) or (dia == 4 and hora < 1):
+            add_blips()
+            tema = bloque_e[idx_e % len(bloque_e)]
+            idx_e += 1
+            parrilla.append(tema)
+            t += tema["duracion"]
+            continue
 
         # ------------------------------------------------------------
         # VIERNES 9 PM a SÁBADO 6 AM: Puro Rock Alternativo e Indie
@@ -385,8 +432,40 @@ def obtener_programacion_actual():
 # =========================================================================
 ESPECTADORES_ACTIVOS = {}
 
+def obtener_preview_actual():
+    # Modo de prueba: un loop simple e independiente de contenido/borrador.csv,
+    # totalmente separado de la grilla en vivo. Nadie mas que quien tenga la
+    # clave de vista previa ve esto.
+    items = cargar_categoria("borrador.csv")
+    duracion_total = sum(i["duracion"] for i in items)
+    if duracion_total <= 0:
+        items = [_relleno_de_emergencia()]
+        duracion_total = items[0]["duracion"]
+    pos = time.time() % duracion_total
+    acumulado = 0
+    for i, item in enumerate(items):
+        if acumulado + item["duracion"] > pos:
+            segundo_inicio = int(pos - acumulado)
+            tiempo_restante = int(item["duracion"] - segundo_inicio)
+            siguiente = items[(i + 1) % len(items)]
+            return item["url"], segundo_inicio, tiempo_restante, item["nombre"], siguiente["nombre"]
+        acumulado += item["duracion"]
+    item = items[0]
+    return item["url"], 0, item["duracion"], item["nombre"], item["nombre"]
+
+def clave_preview_valida(clave):
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "preview_clave.txt")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            secreta = f.read().strip()
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(clave) and bool(secreta) and clave == secreta
+
 @app.route("/")
 def home():
+    es_preview = clave_preview_valida(request.args.get('preview'))
+    clave_actual = request.args.get('preview', '') if es_preview else ''
     return render_template_string("""
     <!DOCTYPE html>
     <html lang="es">
@@ -396,6 +475,8 @@ def home():
         <title>Undone TV</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="preconnect" href="https://www.dropbox.com">
+        <link rel="dns-prefetch" href="https://www.dropbox.com">
         <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 
         <!-- ==== Ajustes para instalar como app (PWA) ==== -->
@@ -451,6 +532,11 @@ def home():
             <div class="ie-menubar"><span>File</span><span>Edit</span><span>View</span><span>Go</span><span>Favorites</span><span>Help</span></div>
             <div class="ie-toolbar"><div class="tool-btn">&lt; Back</div><div class="tool-btn">Forward &gt;</div><div class="tool-btn">(X) Stop</div><div class="tool-btn">(*) Refresh</div><div class="tool-btn">[H] Home</div></div>
             <div class="ie-addressbar"><span>Address</span><input type="text" class="address-input" value="https://randomtv.onrender.com" readonly></div>
+            {% if es_preview %}
+            <div style="background: repeating-linear-gradient(45deg, #000, #000 10px, #ffcc00 10px, #ffcc00 20px); text-align: center; padding: 6px;">
+                <span style="background:#000; color:#ffcc00; padding: 3px 10px; font-family: 'Press Start 2P', monospace; font-size: 8px; letter-spacing: 1px;">MODO PRUEBA -- SOLO VOS VES ESTO</span>
+            </div>
+            {% endif %}
             <div class="page-content">
                 <h1>UNDONE TV</h1>
                 <div class="subtitle">Blips, Musica Y Series Web 24/7</div>
@@ -468,6 +554,9 @@ def home():
             <div class="ie-statusbar"><span>Done</span><span>[e] Internet zone</span></div>
         </div>
         <script>
+            var ES_PREVIEW = {{ 'true' if es_preview else 'false' }};
+            var CLAVE_PREVIEW = {{ clave_actual|tojson }};
+            var URL_INFO = ES_PREVIEW ? ('/api/preview_info?clave=' + encodeURIComponent(CLAVE_PREVIEW)) : '/api/live_info';
             var caja = document.getElementById('reproductor-caja');
             var wrapper = document.getElementById('video-wrapper');
             var btnAudio = document.getElementById('btn-audio');
@@ -495,7 +584,8 @@ def home():
             }
 
             function sincronizarCanal() {
-                fetch('/api/live_info')
+                var t_recibido = Date.now();
+                fetch(URL_INFO)
                     .then(function(respuesta) { return respuesta.json(); })
                     .then(function(datos) {
                         reintentos = 0;
@@ -503,7 +593,14 @@ def home():
                         txtActual.innerText = datos.titulo_actual;
                         txtSiguiente.innerText = datos.titulo_siguiente;
                         setTimeout(function() {
-                            player.src = datos.video_url + "#t=" + datos.segundo_inicio;
+                            // Se compensa el tiempo real que paso desde que
+                            // el servidor contesto (red + preparar el video)
+                            // para arrancar en la posicion correcta sin
+                            // importar cuanto tarde tu conexion o tu celular.
+                            // Asi, entres cuando entres, ves lo mismo que
+                            // todos los demas estan viendo en vivo.
+                            var transcurrido = (Date.now() - t_recibido) / 1000;
+                            player.src = datos.video_url + "#t=" + (datos.segundo_inicio + transcurrido);
                             var playPromise = player.play();
                             if (playPromise !== undefined) playPromise.catch(function(err) { console.log("Alineando Stream..."); });
                         }, 1000);
@@ -524,9 +621,13 @@ def home():
 
             var clientId = localStorage.getItem('undonetv_id');
             if (!clientId) { clientId = Math.random().toString(36).substring(2); localStorage.setItem('undonetv_id', clientId); }
-            setInterval(function() {
-                fetch('/api/ping?id=' + clientId).then(res => res.json()).then(data => { txtViewers.innerText = data.espectadores; }).catch(e => console.log(e));
-            }, 60000);
+            if (!ES_PREVIEW) {
+                setInterval(function() {
+                    fetch('/api/ping?id=' + clientId).then(res => res.json()).then(data => { txtViewers.innerText = data.espectadores; }).catch(e => console.log(e));
+                }, 60000);
+            } else {
+                txtViewers.innerText = "modo prueba";
+            }
             sincronizarCanal();
 
             // ==== Registro del service worker (necesario para poder instalar la app) ====
@@ -540,7 +641,20 @@ def home():
         </script>
     </body>
     </html>
-    """, lineas_creditos=CREDITOS_LINEAS)
+    """, lineas_creditos=CREDITOS_LINEAS, es_preview=es_preview, clave_actual=clave_actual)
+
+@app.route("/api/preview_info")
+def api_preview_info():
+    if not clave_preview_valida(request.args.get('clave')):
+        return jsonify({"error": "no autorizado"}), 403
+    video_url, segundo_inicio, tiempo_restante, titulo_actual, titulo_siguiente = obtener_preview_actual()
+    return jsonify({
+        "video_url": video_url,
+        "segundo_inicio": segundo_inicio,
+        "tiempo_restante": tiempo_restante,
+        "titulo_actual": titulo_actual,
+        "titulo_siguiente": titulo_siguiente
+    })
 
 @app.route("/api/live_info")
 def api_live_info():
