@@ -1,3 +1,5 @@
+
+
 import os
 import csv
 import glob
@@ -53,10 +55,12 @@ def _relleno_de_emergencia():
         "duracion": 15, "es_blip": True, "nombre": "Undone TV",
     }
 
-def cargar_categoria(archivo, es_blip=False):
+def cargar_categoria(archivo, es_blip=False, respaldo=None):
     """Lee un archivo CSV de la carpeta contenido/ y arma la lista de videos.
     Cualquier fila con datos invalidos se salta (con un aviso en el log) en
-    vez de romper el sitio entero."""
+    vez de romper el sitio entero. Si el archivo queda vacio y se paso una
+    lista de 'respaldo' (una categoria parecida), se usa esa mientras tanto
+    en vez de mostrar siempre lo mismo."""
     ruta = os.path.join(CARPETA_CONTENIDO, archivo)
     items = []
     if not os.path.exists(ruta):
@@ -79,6 +83,9 @@ def cargar_categoria(archivo, es_blip=False):
                 if es_blip:
                     item["es_blip"] = True
                 items.append(item)
+    if not items and respaldo:
+        print(f"[UndoneTV] AVISO: '{archivo}' esta vacio, se usa contenido de una categoria parecida mientras tanto.")
+        return list(respaldo)
     if not items:
         print(f"[UndoneTV] AVISO: '{archivo}' quedo sin contenido valido, se usa un relleno temporal.")
         items = [_relleno_de_emergencia()]
@@ -114,18 +121,71 @@ ROCK_CLASICO_PRE89 = cargar_categoria("rock_clasico_pre89.csv")
 BLOQUE_A           = cargar_categoria("bloque_a.csv")
 BLOQUE_B           = cargar_categoria("bloque_b.csv")
 BLOQUE_C           = cargar_categoria("bloque_c.csv")
-BLOQUE_E           = cargar_categoria("bloque_e.csv")
+BLOQUE_E           = cargar_categoria("bloque_e.csv", respaldo=BLOQUE_A)
 CORTOS             = cargar_categoria("cortos.csv")
-PILOTOS            = cargar_categoria("pilotos.csv")
+PILOTOS            = cargar_categoria("pilotos.csv", respaldo=CORTOS)
+def nombre_de_serie(archivo):
+    # Deriva el nombre del programa a partir del nombre del archivo:
+    # series_tres_acordes.csv -> "Tres Acordes"
+    base = archivo[len("series_"):] if archivo.startswith("series_") else archivo
+    base = base[:-4] if base.lower().endswith(".csv") else base
+    return base.replace("_", " ").replace("-", " ").strip().title() or "Serie"
+
+def cargar_serie(archivo):
+    """Como cargar_categoria, pero ademas lee 'temporada' y 'capitulo' (si
+    faltan, asume temporada 1 y capitulos en el orden del archivo) y siempre
+    ordena los episodios por temporada y capitulo -- asi salen al aire en
+    orden, como un canal de verdad, sin importar en que orden estan las
+    filas en el CSV."""
+    ruta = os.path.join(CARPETA_CONTENIDO, archivo)
+    nombre_show = nombre_de_serie(archivo)
+    items = []
+    if not os.path.exists(ruta):
+        print(f"[UndoneTV] AVISO: no se encontro contenido/{archivo}")
+        return items
+    with open(ruta, newline="", encoding="utf-8") as f:
+        for num_fila, fila in enumerate(csv.DictReader(f), start=2):
+            url = (fila.get("url") or "").strip()
+            if not url:
+                continue
+            try:
+                duracion = parsear_duracion(fila.get("duracion", ""))
+                if duracion <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                print(f"[UndoneTV] AVISO: fila {num_fila} de {archivo} tiene una duracion invalida, se omitio esa fila.")
+                continue
+            try:
+                temporada = int(str(fila.get("temporada") or "1").strip())
+            except ValueError:
+                temporada = 1
+            try:
+                capitulo = int(str(fila.get("capitulo") or "").strip())
+            except ValueError:
+                capitulo = len(items) + 1
+            nombre_capitulo = (fila.get("nombre") or "").strip() or nombre_automatico(url)
+            items.append({
+                "url": url, "duracion": duracion,
+                "nombre": f"{nombre_show} T{temporada}E{capitulo}",
+                "nombre_capitulo": nombre_capitulo,
+                "temporada": temporada, "capitulo": capitulo,
+            })
+    items.sort(key=lambda i: (i["temporada"], i["capitulo"]))
+    if not items:
+        print(f"[UndoneTV] AVISO: '{archivo}' quedo sin capitulos validos.")
+    return items
+
 def cargar_series():
     # Busca automaticamente CUALQUIER archivo que empiece con "series_"
     # dentro de contenido/ y lo suma como una serie mas a la rotacion.
     # Para agregar una serie nueva no hace falta tocar este archivo: alcanza
-    # con crear un CSV llamado series_lo-que-sea.csv (mismas 3 columnas:
-    # url, duracion, nombre) y subirlo a la carpeta contenido/.
+    # con crear un CSV llamado series_lo-que-sea.csv (columnas: url,
+    # duracion, capitulo, temporada, nombre) y subirlo a la carpeta
+    # contenido/.
     patron = os.path.join(CARPETA_CONTENIDO, "series_*.csv")
     archivos = sorted(glob.glob(patron))
-    listas = [cargar_categoria(os.path.basename(ruta)) for ruta in archivos]
+    listas = [cargar_serie(os.path.basename(ruta)) for ruta in archivos]
+    listas = [l for l in listas if l]  # descarta series sin ningun capitulo valido
     return listas if listas else [[_relleno_de_emergencia()]]
 
 SERIES = cargar_series()
@@ -154,73 +214,111 @@ def calcular_num_blips(hora, dia):
     elif 3 <= hora <= 5: return 5
     return 1
 
+def crear_ciclo(lista_original, rng):
+    """Entrega 'el siguiente' item de una lista sin repetir ninguno antes de
+    haber pasado por todos. Al completar una vuelta, se vuelve a barajar
+    (en vez de repetir siempre el mismo orden) y se evita que el ultimo
+    item de una vuelta quede pegado con el primero de la vuelta siguiente."""
+    baraja = list(lista_original)
+    rng.shuffle(baraja)
+    estado = {"i": 0, "anterior": None}
+    def siguiente():
+        if estado["i"] >= len(baraja):
+            nueva = list(lista_original)
+            rng.shuffle(nueva)
+            if len(nueva) > 1 and nueva[0] is estado["anterior"]:
+                nueva[0], nueva[1] = nueva[1], nueva[0]
+            baraja[:] = nueva
+            estado["i"] = 0
+        item = baraja[estado["i"]]
+        estado["i"] += 1
+        estado["anterior"] = item
+        return item
+    return siguiente
+
 def generar_parrilla_semanal(inicio_semana_utc):
     rng = random.Random(inicio_semana_utc)
     parrilla = []
     t = inicio_semana_utc
     fin_semana = inicio_semana_utc + 604800
-    
+
     # ZONA HORARIA VENEZOLANA ASEGURADA (UTC-4 = -14400 segundos)
     OFFSET_VET = -14400
 
     def hora_vet(ts): return ((ts + OFFSET_VET) % 86400) // 3600
     def dia_semana(ts): return time.gmtime(ts + OFFSET_VET).tm_wday
 
-    # Listas de trabajo
-    blips_r = list(BLIPS_REGULARES); rng.shuffle(blips_r); idx_blip_r = 0
-    blips_u = list(BLIPS_UNDONE); rng.shuffle(blips_u); idx_blip_u = 0
-    mus_normales = list(MUSICALES_NORMALES); rng.shuffle(mus_normales); idx_mus_n = 0
-    mus_oscuros = list(MUSICALES_OSCUROS); rng.shuffle(mus_oscuros); idx_mus_o = 0
+    # Ciclos: cada uno entrega "el siguiente" sin repetir contenido antes de
+    # agotar la lista completa, y se reordena solo al completar una vuelta
+    # (en vez de repetir siempre la misma secuencia toda la semana).
+    ciclo_blips_r = crear_ciclo(BLIPS_REGULARES, rng)
+    ciclo_blips_u = crear_ciclo(BLIPS_UNDONE, rng)
+    ciclo_mus_normales = crear_ciclo(MUSICALES_NORMALES, rng)
+    ciclo_mus_oscuros = crear_ciclo(MUSICALES_OSCUROS, rng)
+    ciclo_rock_manana = crear_ciclo(ROCK_CLASICO_PRE89, rng)
+    ciclo_rock_noche = crear_ciclo(ROCK_CLASICO_PRE89, rng)
+    ciclo_viernes = crear_ciclo(BLOQUE_A + BLOQUE_C, rng)
+    ciclo_bloque_c_indie = crear_ciclo(BLOQUE_C, rng)
+    ciclo_bloque_e = crear_ciclo(BLOQUE_E, rng)
+    ciclo_pilotos = crear_ciclo(PILOTOS, rng)
+    ciclo_cortos = crear_ciclo(CORTOS, rng)
 
+    # Bloque A y B del evento del sabado: se agotan una vez y recien ahi
+    # avanza la etapa siguiente (no son un loop largo, son un tramo fijo
+    # dentro de la noche), asi que estos si usan indice simple.
     bloque_a = list(BLOQUE_A); rng.shuffle(bloque_a); idx_a = 0
     bloque_b = list(BLOQUE_B); rng.shuffle(bloque_b); idx_b = 0
-    bloque_c = list(BLOQUE_C); rng.shuffle(bloque_c); idx_c = 0
-    bloque_d = list(ROCK_CLASICO_PRE89); rng.shuffle(bloque_d); idx_d_manana = 0
-    bloque_d_noche = list(ROCK_CLASICO_PRE89); rng.shuffle(bloque_d_noche); idx_d_noche = 0
-    bloque_viernes_noche = list(BLOQUE_A + BLOQUE_C); rng.shuffle(bloque_viernes_noche); idx_viernes = 0
-    bloque_e = list(BLOQUE_E); rng.shuffle(bloque_e); idx_e = 0
-    pilotos = list(PILOTOS); rng.shuffle(pilotos); idx_piloto = 0
 
+    # Cada serie mantiene su PROPIO contador de capitulo, independiente del
+    # de las demas series, para que cada una salga siempre en orden
+    # (T1E1, T1E2, T1E3...) como un canal de verdad -- nunca salteada ni
+    # desordenada, sin importar cuantas veces le toque a otra serie primero.
     series = SERIES
-    idx_serie = 0
+    idx_por_serie = [0] * len(series)
+    idx_cual_serie = 0
     def obtener_serie():
-        nonlocal idx_serie
-        lista = series[idx_serie % len(series)]
-        idx_serie += 1
-        return lista[idx_serie % len(lista)]
+        nonlocal idx_cual_serie
+        j = idx_cual_serie % len(series)
+        lista = series[j]
+        i = idx_por_serie[j] % len(lista)
+        idx_por_serie[j] += 1
+        idx_cual_serie += 1
+        return lista[i]
 
     corto_emitido_dia = set()
-    etapa_sabado_noche = 0 
+    etapa_sabado_noche = 0
     etapa_domingo = 0
+
+    def es_finde_extendido(dia, hora):
+        # El gran finde especial: viernes 6pm a lunes 6am de la semana
+        # siguiente. Fuera de esto, dia de semana normal (pero variado).
+        return (dia == 4 and hora >= 18) or dia == 5 or dia == 6 or (dia == 0 and hora < 6)
 
     while t < fin_semana:
         hora = hora_vet(t)
         dia = dia_semana(t)
 
         def add_blips():
-            nonlocal t, hora, idx_blip_r, idx_blip_u
+            nonlocal t, hora
             num = calcular_num_blips(hora, dia)
-            for _ in range(num):
-                if _ == num-1 and rng.random() <= 0.4:
-                    blip = blips_u[idx_blip_u % len(blips_u)]
-                    idx_blip_u += 1
+            for i in range(num):
+                if i == num - 1 and rng.random() <= 0.4:
+                    blip = ciclo_blips_u()
                 else:
-                    blip = blips_r[idx_blip_r % len(blips_r)]
-                    idx_blip_r += 1
+                    blip = ciclo_blips_r()
                 parrilla.append(blip)
                 t += blip["duracion"]
                 hora = hora_vet(t)
 
         def add_serie_o_corto():
             nonlocal t, hora
-            if (hora >= 23 or hora < 3) and (t // 86400) not in corto_emitido_dia:
-                if rng.random() < 0.5:
-                    corto = CORTOS[0]
-                    parrilla.append(corto)
-                    t += corto["duracion"]
-                    corto_emitido_dia.add(t // 86400)
-                    hora = hora_vet(t)
-                    return
+            if (hora >= 23 or hora < 3) and (t // 86400) not in corto_emitido_dia and rng.random() < 0.5:
+                corto = ciclo_cortos()
+                parrilla.append(corto)
+                t += corto["duracion"]
+                corto_emitido_dia.add(t // 86400)
+                hora = hora_vet(t)
+                return
             add_blips()
             serie = obtener_serie()
             parrilla.append(serie)
@@ -228,76 +326,30 @@ def generar_parrilla_semanal(inicio_semana_utc):
             hora = hora_vet(t)
 
         # ------------------------------------------------------------
-        # LUNES 9 PM a 1 AM: Lunes Oscuro (solo musica oscura)
+        # VIERNES 6 PM a SÁBADO 6 AM: Puro Rock Alternativo e Indie
         # ------------------------------------------------------------
-        if (dia == 0 and hora >= 21) or (dia == 1 and hora < 1):
+        if (dia == 4 and hora >= 18) or (dia == 5 and hora < 6):
             add_blips()
-            tema = mus_oscuros[idx_mus_o % len(mus_oscuros)]
-            idx_mus_o += 1
+            tema = ciclo_viernes()
             parrilla.append(tema)
             t += tema["duracion"]
             continue
 
         # ------------------------------------------------------------
-        # MARTES 9 PM a 1 AM: Maraton de Series
-        # ------------------------------------------------------------
-        if (dia == 1 and hora >= 21) or (dia == 2 and hora < 1):
-            add_blips()
-            tema = obtener_serie()
-            parrilla.append(tema)
-            t += tema["duracion"]
-            continue
-
-        # ------------------------------------------------------------
-        # MIERCOLES 9 PM a 1 AM: Noche de Pilotos
-        # ------------------------------------------------------------
-        if (dia == 2 and hora >= 21) or (dia == 3 and hora < 1):
-            add_blips()
-            tema = pilotos[idx_piloto % len(pilotos)]
-            idx_piloto += 1
-            parrilla.append(tema)
-            t += tema["duracion"]
-            continue
-
-        # ------------------------------------------------------------
-        # JUEVES 9 PM a 1 AM: Bloque E
-        # ------------------------------------------------------------
-        if (dia == 3 and hora >= 21) or (dia == 4 and hora < 1):
-            add_blips()
-            tema = bloque_e[idx_e % len(bloque_e)]
-            idx_e += 1
-            parrilla.append(tema)
-            t += tema["duracion"]
-            continue
-
-        # ------------------------------------------------------------
-        # VIERNES 9 PM a SÁBADO 6 AM: Puro Rock Alternativo e Indie
-        # ------------------------------------------------------------
-        if (dia == 4 and hora >= 21) or (dia == 5 and hora < 6):
-            add_blips()
-            tema = bloque_viernes_noche[idx_viernes % len(bloque_viernes_noche)]
-            idx_viernes += 1
-            parrilla.append(tema)
-            t += tema["duracion"]
-            continue
-
-        # ------------------------------------------------------------
-        # SÁBADO DESDE LAS 6 AM: Rock Clásico hasta agotar
+        # SÁBADO DESDE LAS 6 AM: Rock Clásico
         # ------------------------------------------------------------
         if dia == 5 and 6 <= hora < 18:
-            if idx_d_manana < len(bloque_d):
-                add_blips()
-                tema = bloque_d[idx_d_manana]
-                idx_d_manana += 1
-                parrilla.append(tema)
-                t += tema["duracion"]
-                continue
+            add_blips()
+            tema = ciclo_rock_manana()
+            parrilla.append(tema)
+            t += tema["duracion"]
+            continue
 
         # ------------------------------------------------------------
         # SÁBADO EVENTO 6 PM (Alt -> Serie -> Clasico -> Serie -> Emo -> Normal)
         # ------------------------------------------------------------
         if dia == 5 and hora >= 18:
-            if etapa_sabado_noche == 0:  
+            if etapa_sabado_noche == 0:
                 if idx_a < len(bloque_a):
                     add_blips()
                     tema = bloque_a[idx_a]
@@ -307,27 +359,25 @@ def generar_parrilla_semanal(inicio_semana_utc):
                     continue
                 else: etapa_sabado_noche = 1
 
-            if etapa_sabado_noche == 1:  
+            if etapa_sabado_noche == 1:
                 add_serie_o_corto()
                 etapa_sabado_noche = 2
                 continue
 
-            if etapa_sabado_noche == 2:  
-                if idx_d_noche < len(bloque_d_noche):
-                    add_blips()
-                    tema = bloque_d_noche[idx_d_noche]
-                    idx_d_noche += 1
-                    parrilla.append(tema)
-                    t += tema["duracion"]
-                    continue
-                else: etapa_sabado_noche = 3
+            if etapa_sabado_noche == 2:
+                add_blips()
+                tema = ciclo_rock_noche()
+                parrilla.append(tema)
+                t += tema["duracion"]
+                etapa_sabado_noche = 3
+                continue
 
-            if etapa_sabado_noche == 3:  
+            if etapa_sabado_noche == 3:
                 add_serie_o_corto()
                 etapa_sabado_noche = 4
                 continue
 
-            if etapa_sabado_noche == 4:  
+            if etapa_sabado_noche == 4:
                 if idx_b < len(bloque_b):
                     add_blips()
                     tema = bloque_b[idx_b]
@@ -342,11 +392,11 @@ def generar_parrilla_semanal(inicio_semana_utc):
         # ------------------------------------------------------------
         if dia == 6 and 0 <= hora < 9:
             if etapa_domingo == 0:
-                # Busca la cancion "Isle unto Thyself" por su archivo (no por el
-                # nombre en pantalla, que se puede editar libremente sin romper esto).
-                # Si no la encuentra (por ejemplo, si borraste esa fila), usa la
-                # primera cancion de Bloque C en su lugar para no cortar la emision.
-                isle = next((item for item in BLOQUE_C if "isle-unto-thyself" in item["url"].lower()), BLOQUE_C[0])
+                # Busca la cancion "Isle unto Thyself" por su archivo (no por
+                # el nombre en pantalla, que se puede editar libremente sin
+                # romper esto). Si no la encuentra, usa cualquier cancion de
+                # Bloque C en su lugar para no cortar la emision.
+                isle = next((item for item in BLOQUE_C if "isle-unto-thyself" in item["url"].lower()), None) or ciclo_bloque_c_indie()
                 parrilla.append(isle)
                 t += isle["duracion"]
                 etapa_domingo = 1
@@ -354,13 +404,11 @@ def generar_parrilla_semanal(inicio_semana_utc):
             elif etapa_domingo == 1:
                 num_blips_indie = rng.randint(4, 7)
                 for _ in range(num_blips_indie):
-                    blip = blips_r[idx_blip_r % len(blips_r)] if rng.random() > 0.4 else blips_u[idx_blip_u % len(blips_u)]
-                    idx_blip_r += 1; idx_blip_u += 1
+                    blip = ciclo_blips_r() if rng.random() > 0.4 else ciclo_blips_u()
                     parrilla.append(blip)
                     t += blip["duracion"]
-                
-                tema = bloque_c[idx_c % len(bloque_c)]
-                idx_c += 1
+
+                tema = ciclo_bloque_c_indie()
                 parrilla.append(tema)
                 t += tema["duracion"]
                 continue
@@ -370,30 +418,38 @@ def generar_parrilla_semanal(inicio_semana_utc):
         # ------------------------------------------------------------
         if dia == 6 and hora == 9:
             add_blips()
-            tema = bloque_d[idx_d_manana % len(bloque_d)]
-            idx_d_manana += 1
+            tema = ciclo_rock_manana()
             parrilla.append(tema)
             t += tema["duracion"]
             continue
 
         # ------------------------------------------------------------
-        # PROGRAMACIÓN NORMAL (Fallback)
+        # EL RESTO DE LA SEMANA (fuera de los bloques de arriba):
+        # rotacion de musica variada + series/cortos, siempre presente
+        # todos los dias. Durante el finde extendido (viernes 6pm a lunes
+        # 6am) se suma ademas una chance de pilotos, para que esos huecos
+        # tambien se sientan parte del evento grande y no una vuelta brusca
+        # a la rutina.
         # ------------------------------------------------------------
         add_blips()
         for _ in range(3):
             es_noche = (hora >= 20 or hora < 6)
             if es_noche and rng.random() < 0.6:
-                tema = mus_oscuros[idx_mus_o % len(mus_oscuros)]
-                idx_mus_o += 1
+                tema = ciclo_mus_oscuros()
             else:
-                tema = mus_normales[idx_mus_n % len(mus_normales)]
-                idx_mus_n += 1
+                tema = ciclo_mus_normales()
             parrilla.append(tema)
             t += tema["duracion"]
             hora = hora_vet(t)
             dia = dia_semana(t)
-        
-        add_serie_o_corto()
+
+        if es_finde_extendido(dia, hora) and rng.random() < 0.2:
+            add_blips()
+            tema = ciclo_pilotos()
+            parrilla.append(tema)
+            t += tema["duracion"]
+        else:
+            add_serie_o_corto()
 
     return parrilla
 
