@@ -1,5 +1,3 @@
-
-
 import os
 import csv
 import glob
@@ -285,9 +283,19 @@ def generar_parrilla_semanal(inicio_semana_utc):
         idx_cual_serie += 1
         return lista[i]
 
-    corto_emitido_dia = set()
     etapa_sabado_noche = 0
     etapa_domingo = 0
+
+    # ------------------------------------------------------------
+    # CORTOS: todas las noches de 7pm a 6am salen entre 3 y 6 (nunca mas de
+    # los que realmente existan en cortos.csv, y sin repetir ninguno hasta
+    # agotar la lista). Se calculan "horarios" parejos dentro de la ventana
+    # de esa noche para que queden repartidos, no todos juntos. Si no hay
+    # NINGUN corto cargado, esto simplemente no hace nada y la programacion
+    # sigue como si no existiera esta seccion.
+    # ------------------------------------------------------------
+    id_noche_actual = None
+    checkpoints_cortos_noche = []
 
     def es_finde_extendido(dia, hora):
         # El gran finde especial: viernes 6pm a lunes 6am de la semana
@@ -312,18 +320,43 @@ def generar_parrilla_semanal(inicio_semana_utc):
 
         def add_serie_o_corto():
             nonlocal t, hora
-            if (hora >= 23 or hora < 3) and (t // 86400) not in corto_emitido_dia and rng.random() < 0.5:
-                corto = ciclo_cortos()
-                parrilla.append(corto)
-                t += corto["duracion"]
-                corto_emitido_dia.add(t // 86400)
-                hora = hora_vet(t)
-                return
             add_blips()
             serie = obtener_serie()
             parrilla.append(serie)
             t += serie["duracion"]
             hora = hora_vet(t)
+
+        # ------------------------------------------------------------
+        # CORTOS GARANTIZADOS: se revisa PRIMERO, antes que cualquier otro
+        # bloque del dia, para que aparezcan todas las noches sin importar
+        # que otra cosa este sonando (finde especial o dia normal).
+        # ------------------------------------------------------------
+        en_ventana_cortos = hora >= 19 or hora < 6
+        if en_ventana_cortos:
+            id_noche = (t + OFFSET_VET - 19 * 3600) // 86400
+            if id_noche != id_noche_actual:
+                id_noche_actual = id_noche
+                disponibles = len(CORTOS)
+                objetivo = min(rng.randint(3, 6), disponibles) if disponibles else 0
+                horas_restantes_ventana = (6 - hora) % 24
+                if objetivo > 0 and horas_restantes_ventana > 0:
+                    duracion_ventana = horas_restantes_ventana * 3600
+                    checkpoints_cortos_noche = sorted(
+                        t + int((i + rng.random()) * duracion_ventana / objetivo)
+                        for i in range(objetivo)
+                    )
+                else:
+                    checkpoints_cortos_noche = []
+
+            if checkpoints_cortos_noche and t >= checkpoints_cortos_noche[0]:
+                checkpoints_cortos_noche.pop(0)
+                add_blips()
+                corto = ciclo_cortos()
+                parrilla.append(corto)
+                t += corto["duracion"]
+                continue
+        else:
+            id_noche_actual = None
 
         # ------------------------------------------------------------
         # VIERNES 6 PM a SÁBADO 6 AM: Puro Rock Alternativo e Indie
@@ -739,3 +772,4 @@ def api_ping():
 if __name__ == "__main__":
     puerto = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=puerto)
+
