@@ -105,6 +105,17 @@ def cargar_creditos():
 
 CREDITOS_LINEAS = cargar_creditos()
 
+def cargar_aviso():
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "aviso_legal.txt")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            lineas = [linea.strip() for linea in f if linea.strip()]
+    except (FileNotFoundError, OSError):
+        lineas = []
+    return lineas if lineas else ["AVISO:", "- Proyecto de fans, sin fines de lucro."]
+
+AVISO_LINEAS = cargar_aviso()
+
 # =========================================================================
 # CONTENIDO: cada categoria vive en su propio archivo CSV dentro de la
 # carpeta contenido/. Para agregar o quitar videos NO hace falta tocar este
@@ -632,6 +643,9 @@ def home():
             .fs-button:active { border-color: #0d0212 #4b1763 #4b1763 #0d0212; }
             .creditos-box { margin-top: 25px; padding: 10px; font-size: 7px; color: #6a4085; border-top: 1px dashed #3b0e4d; text-align: left; line-height: 1.8;}
             .creditos-box span { color: #b18ec4; }
+            .aviso-box { margin-top: 4px; padding: 10px; font-size: 7px; color: #6a4085; border-top: 1px dashed #3b0e4d; text-align: left; line-height: 1.8;}
+            .aviso-box span { color: #b18ec4; }
+            .aviso-box a { color: #b18ec4; }
             .ie-statusbar { font-size: 8px; justify-content: space-between; border-top: 2px solid #3b0e4d; border-bottom: none;}
         </style>
     </head>
@@ -662,6 +676,7 @@ def home():
                 <div class="viewers-box">[ ESPECTADORES EN LINEA: <span id="num-viewers">1</span> ]</div>
                 <button id="btn-audio" class="fs-button" onclick="conectarCanal()">[ SINTONIZAR AUDIO ]</button>
                 <div class="creditos-box"><span>{{ lineas_creditos[0] }}</span>{% for linea in lineas_creditos[1:] %}<br>{{ linea }}{% endfor %}</div>
+                <div class="aviso-box"><span>{{ lineas_aviso[0] }}</span>{% for linea in lineas_aviso[1:] %}<br>{{ linea }}{% endfor %}</div>
             </div>
             <div class="ie-statusbar"><span>Done</span><span>[e] Internet zone</span></div>
         </div>
@@ -753,7 +768,7 @@ def home():
         </script>
     </body>
     </html>
-    """, lineas_creditos=CREDITOS_LINEAS, es_preview=es_preview, clave_actual=clave_actual, meta_descripcion=META_DESCRIPCION, url_actual=url_actual)
+    """, lineas_creditos=CREDITOS_LINEAS, lineas_aviso=AVISO_LINEAS, es_preview=es_preview, clave_actual=clave_actual, meta_descripcion=META_DESCRIPCION, url_actual=url_actual)
 
 @app.route("/api/preview_info")
 def api_preview_info():
@@ -811,3 +826,4 @@ def api_ping():
 if __name__ == "__main__":
     puerto = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=puerto)
+
