@@ -551,10 +551,22 @@ def clave_preview_valida(clave):
         return False
     return bool(clave) and bool(secreta) and clave == secreta
 
+def cargar_meta_descripcion():
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meta_descripcion.txt")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            texto = f.read().strip()
+    except (FileNotFoundError, OSError):
+        texto = ""
+    return texto or "Undone TV - canal online 24/7 de videoclips, series web y blips."
+
+META_DESCRIPCION = cargar_meta_descripcion()
+
 @app.route("/")
 def home():
     es_preview = clave_preview_valida(request.args.get('preview'))
     clave_actual = request.args.get('preview', '') if es_preview else ''
+    url_actual = request.host_url.rstrip('/') + '/'
     return render_template_string("""
     <!DOCTYPE html>
     <html lang="es">
@@ -562,6 +574,17 @@ def home():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Undone TV</title>
+
+        <!-- ==== Para que aparezca bien en buscadores y al compartir el link ==== -->
+        <meta name="description" content="{{ meta_descripcion }}">
+        <link rel="canonical" href="{{ url_actual }}">
+        <meta property="og:title" content="Undone TV">
+        <meta property="og:description" content="{{ meta_descripcion }}">
+        <meta property="og:type" content="website">
+        <meta property="og:url" content="{{ url_actual }}">
+        <meta property="og:image" content="{{ url_actual }}static/icon-512.png">
+        <!-- ===================================================================== -->
+
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link rel="preconnect" href="https://www.dropbox.com">
@@ -730,7 +753,7 @@ def home():
         </script>
     </body>
     </html>
-    """, lineas_creditos=CREDITOS_LINEAS, es_preview=es_preview, clave_actual=clave_actual)
+    """, lineas_creditos=CREDITOS_LINEAS, es_preview=es_preview, clave_actual=clave_actual, meta_descripcion=META_DESCRIPCION, url_actual=url_actual)
 
 @app.route("/api/preview_info")
 def api_preview_info():
@@ -744,6 +767,22 @@ def api_preview_info():
         "titulo_actual": titulo_actual,
         "titulo_siguiente": titulo_siguiente
     })
+
+@app.route("/robots.txt")
+def robots_txt():
+    contenido = "User-agent: *\nAllow: /\nSitemap: " + request.host_url.rstrip('/') + "/sitemap.xml\n"
+    return app.response_class(contenido, mimetype="text/plain")
+
+@app.route("/sitemap.xml")
+def sitemap_xml():
+    url = request.host_url.rstrip('/') + '/'
+    contenido = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f'  <url><loc>{url}</loc><changefreq>daily</changefreq></url>\n'
+        '</urlset>\n'
+    )
+    return app.response_class(contenido, mimetype="application/xml")
 
 @app.route("/api/live_info")
 def api_live_info():
@@ -772,4 +811,3 @@ def api_ping():
 if __name__ == "__main__":
     puerto = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=puerto)
-
